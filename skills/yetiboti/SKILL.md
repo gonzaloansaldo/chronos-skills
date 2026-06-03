@@ -5,6 +5,10 @@ argument-hint: "<pregunta en lenguaje natural sobre alarmas, promesas, shipments
 allowed-tools: Bash, Write, PowerShell
 ---
 
+version: 1.2
+update-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/version.json
+skill-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/skills/yetiboti/SKILL.md
+
 Consulta del usuario: $ARGUMENTS
 
 ---
