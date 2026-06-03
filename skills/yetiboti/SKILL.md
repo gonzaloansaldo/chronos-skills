@@ -1,7 +1,7 @@
 ---
 name: yetiboti
-description: Asistente de datos de Promise (MercadoLibre). Responde consultas sobre alarmas, promesas/CVR, shipments/Lead Time, composición (Buffering, Custom Offsets) y KPI Grinch consultando BigQuery en meli-bi-data.
-argument-hint: "<pregunta en lenguaje natural sobre alarmas, promesas, shipments, LT, buffering, CVR o Grinch>"
+description: Asistente de datos de Promise (MercadoLibre). Responde consultas sobre alarmas, promesas/CVR, shipments/Lead Time, composición (Buffering, Custom Offsets) y Promesa Ideal consultando BigQuery en meli-bi-data.
+argument-hint: "<pregunta en lenguaje natural sobre alarmas, promesas, shipments, LT, buffering, CVR o promesa ideal>"
 allowed-tools: Bash, Write, PowerShell
 ---
 
@@ -35,6 +35,7 @@ Leer `$ARGUMENTS` y determinar el **tipo de consulta** según las palabras clave
 | alarma, alarm, alerta, monitor, cerberus | ALARMS | `BT_CRB_ALARMS` |
 | promesa, promise, VIP, visita, CVR, conversión, conversión, conversion | PROMISE_CVR | `BT_SPEED_PROMISE_VIP_CVR` |
 | shipment, envío, envio, LT, lead time, delay, early, on time, ontime, buffering, buffer, custom offset, CO, ventana, window, composición, composicion | LT_SUMMARY | `BT_SPEED_PROMISE_LT_SUMMARY` |
+| promesa ideal, ideal promise, SD ideal, ND ideal, 2D ideal, NBC, neto de buyers choice | IDEAL_PROMISE | `BT_SHP_IDEAL_PROMISE` |
 
 Si la consulta mezcla promesas con shipments, usar **ambas tablas** y presentar los resultados side-by-side con labels explícitos.
 
@@ -158,12 +159,58 @@ QUALIFY ROW_NUMBER() OVER (
 | VIP_DS_ISOYEAR | INTEGER | Año ISO |
 | FLAG_HNB | INTEGER | Flag Heavy & Bulky |
 
-**Reglas de cálculo:**
-- **CVR / Conversión** = `SUM(VIP_CONGRATS) / SUM(VISITS)` — agregar filtro `FLAG_LAST_VIP = TRUE`
-- **Promesa promedio** = `AVG(AVG_PROMISE)` o `SUM(AVG_PROMISE * VISITS) / SUM(VISITS)` (ponderado)
-- **Distribución de promesas** = suma de cada `*_VIPS` / `SUM(VISITS)`
+**Reglas de cálculo — métricas de distribución de promesa (CRÍTICO):**
+
+Siempre dividir el numerador por `NULLIF(SUM(VISITS), 0)` o `SAFE_DIVIDE`. Construir el numerador según la métrica pedida:
+
+| Métrica | Numerador |
+|---|---|
+| % SD | `SUM(SAMEDAYS_VIPS)` |
+| % ND | `SUM(ONEDAYS_VIPS)` |
+| % <=ND | `SUM(SAMEDAYS_VIPS) + SUM(ONEDAYS_VIPS)` |
+| % <=2D | `SUM(SAMEDAYS_VIPS) + SUM(ONEDAYS_VIPS) + SUM(TWODAYS_VIPS) + SUM(WINDOW_VIPS_UB_MENOR_2)` |
+| % 2D | `SUM(TWODAYS_VIPS)` |
+| % 3D | `SUM(THREEDAYS_VIPS)` |
+| % 4D | `SUM(FOURDAYS_VIPS)` |
+| % 5D | `SUM(FIVEDAYS_VIPS)` |
+| % >5D | `SUM(MASFIVEDAYS_VIPS)` |
+| CVR / Conversión | `SUM(VIP_CONGRATS) / SUM(VISITS)` — agregar filtro `FLAG_LAST_VIP = TRUE` |
+| Promesa promedio | `SUM(AVG_PROMISE * VISITS) / SUM(VISITS)` (ponderado) |
+
+**Lógica de fechas — semana Domingo a Sábado (OBLIGATORIO):**
+- Siempre filtrar usando `VIP_DS` con `BETWEEN`. La semana va de Domingo a Sábado.
+- **Semana pasada:** `VIP_DS BETWEEN DATE_SUB(DATE_TRUNC(CURRENT_DATE(), WEEK), INTERVAL 1 WEEK) AND DATE_SUB(DATE_TRUNC(CURRENT_DATE(), WEEK), INTERVAL 1 DAY)`
+- **2 semanas atrás:** reemplazar con `INTERVAL 2 WEEK` y `INTERVAL 8 DAY`
+- **NUNCA usar** `VIP_DS_WEEK`, `VIP_DS_ISOYEAR` ni `VIP_DS_YEAR` para filtrar por semana.
+- No conocés la fecha actual — siempre delegarla a `CURRENT_DATE()` en BigQuery. Nunca fabricar ni mencionar fechas exactas en la respuesta; explicar la lógica en términos de "última semana completa (Domingo a Sábado)".
+
+**Top Cities — cuando el usuario menciona "top cities", "top ciudades" o "top 10":**
+
+Agregar este LEFT JOIN a la query:
+```sql
+FROM `meli-bi-data.WHOWNER.BT_SPEED_PROMISE_VIP_CVR` VIP
+LEFT JOIN `meli-bi-data.SBOX_NETWORKD.LK_PROMISE_TOP_CITIES_FIXED` TC
+  ON VIP.SITE_ID = TC.SITE_ID
+ AND VIP.TRK_DESTINATION_STATE_NAME = TC.TRK_DESTINATION_STATE_NAME
+ AND VIP.TRK_DESTINATION_CITY_NAME = TC.TRK_DESTINATION_CITY_NAME
+```
+
+Reglas de agrupación:
+- Usar `CASE WHEN TC.METRO_CITY_GROUP LIKE 'Other Cities%' THEN 'Other Cities' ELSE COALESCE(TC.METRO_CITY_GROUP, 'Other Cities') END AS CITY_GROUP`
+- La respuesta debe incluir (en orden): hasta 10 grupos por `METRO_CITY_GROUP`, una fila `Other Cities`, y una fila `Total Site` (con `UNION ALL`)
+- Ordenar: ciudades por volumen DESC, `Other Cities` penúltimo, `Total Site` último
+- En la tabla de respuesta mostrar SOLO dos columnas: label de ciudad y el porcentaje pedido. No mostrar volúmenes crudos salvo que el usuario los pida explícitamente.
+
+**Ambigüedad Ciudad vs. Estado:**
+Si el usuario pregunta por una ubicación que comparte nombre con estado/provincia (ej: São Paulo, Rio de Janeiro, Buenos Aires), mostrar AMBAS vistas con `UNION ALL`:
+- Un SELECT filtrando `TRK_DESTINATION_CITY_NAME = 'Nombre'` → label `'Nombre (City)'`
+- Un SELECT filtrando `TRK_DESTINATION_STATE_NAME = 'Nombre'` → label `'Nombre (State)'`
+
+Para cualquier otra ciudad sin ambigüedad, filtrar directamente por `TRK_DESTINATION_CITY_NAME`.
 
 **IMPORTANTE:** Para consultas de promesas, usar SIEMPRE esta tabla como fuente autoritativa. Nunca dividir un numerador de VIPs por un denominador de SHIPMENTS.
+
+**Regla de filtros:** Bajo ninguna circunstancia agregar filtros que no estén especificados explícitamente en las instrucciones o en el pedido del usuario.
 
 ---
 
@@ -252,6 +299,28 @@ QUALIFY ROW_NUMBER() OVER (
 - Para métricas **Fast**: reemplazar numerador con columna `_FAST` y denominador con `SUM(SHIPMENTS_FAST)`
 - **Por semana**: usar `ISO_FVD_DATE_WEEK` + `ISO_FVD_DATE_YEAR` (o `ISO_FVD_YEAR_WEEK` como label)
 - Usar `SAFE_DIVIDE` para evitar división por cero
+
+---
+
+#### TIPO: IDEAL_PROMISE — `meli-bi-data.WHOWNER.BT_SHP_IDEAL_PROMISE`
+
+**Reglas de cálculo:**
+
+| Métrica | Numerador | Denominador |
+|---|---|---|
+| % SD Ideal | `SUM(LT_EST_SD_IDEAL)` | `SUM(SHIPMENTS)` |
+| % ND Ideal | `SUM(LT_EST_ND_IDEAL)` | `SUM(SHIPMENTS)` |
+| % 2D Ideal | `SUM(LT_EST_2D_IDEAL)` | `SUM(SHIPMENTS)` |
+| % SD Real | `SUM(LT_EST_SD_REAL)` | `SUM(SHIPMENTS)` |
+| % ND Real | `SUM(LT_EST_ND_REAL)` | `SUM(SHIPMENTS)` |
+| % 2D Real | `SUM(LT_EST_2D_REAL)` | `SUM(SHIPMENTS)` |
+
+**Variante NBC** (neto de Buyers Choice / without Buyers Choice): si el usuario menciona "NBC", "neto de buyers choice" o "sin buyers choice", reemplazar la columna del numerador por su equivalente `_NBC`:
+- `LT_EST_SD_IDEAL_NBC`, `LT_EST_ND_IDEAL_NBC`, `LT_EST_2D_IDEAL_NBC`
+
+**Lógica de fechas — por semana:** usar `ISO_CREATED_WEEK` e `ISO_CREATED_YEAR`.
+
+Usar `SAFE_DIVIDE` en todos los cálculos.
 
 ---
 
