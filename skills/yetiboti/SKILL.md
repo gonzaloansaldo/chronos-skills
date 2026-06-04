@@ -5,7 +5,7 @@ argument-hint: "<pregunta en lenguaje natural sobre alarmas, promesas, shipments
 allowed-tools: Bash, Write, PowerShell
 ---
 
-version: 1.4
+version: 1.5
 update-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/version.json
 skill-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/skills/yetiboti/SKILL.md
 
@@ -183,6 +183,34 @@ QUALIFY ROW_NUMBER() OVER (
 | VIP_DS_YEAR | INTEGER | Año |
 | VIP_DS_ISOYEAR | INTEGER | Año ISO |
 | FLAG_HNB | INTEGER | Flag Heavy & Bulky |
+| TRK_ORIGIN_ADDRESS_0_VALUE_ID | STRING | FC de origen de la visita — facility ID para FULFILLMENT, estado de origen para CROSS_DOCKING y XD_DROP_OFF. Usar cuando el usuario pide análisis por FC de origen o hub de origen en VIPs |
+| VISITS_SLOW | INTEGER | Visitas con oferta slow (método slow o slow_meli) cuando hay dos ofertas simultáneas |
+| PROMISE_FAST_LB | INTEGER | Suma de lower bound de la promesa fast (cuando coexiste con slow) ponderado por visitas |
+| PROMISE_SLOW_LB | INTEGER | Suma de lower bound de la promesa slow ponderado por visitas |
+| PROMISE_SLOW_UB | INTEGER | Suma de upper bound de la promesa slow ponderado por visitas |
+| PROMISE_LB | INTEGER | Suma del lower bound de la promesa mostrada al usuario ponderado por visitas |
+| PROMISE_UB | INTEGER | Suma del upper bound de la promesa mostrada al usuario ponderado por visitas |
+| WINDOW_VIPS_UB_MENOR_2 | INTEGER | Visitas con promesa con ventana cuyo UB es menor o igual a 2 días (usado en el cálculo de % <=2D) |
+| WINDOW_VIPS_UB_MENOR_2_CONGRATS | INTEGER | Órdenes generadas con promesa de ventana UB ≤ 2 días |
+| WINDOW_1_X_VIPS | INTEGER | Visitas con promesa con ventana LB=1 día |
+| WINDOW_2_X_VIPS | INTEGER | Visitas con promesa con ventana LB=2 días |
+| WINDOW_3_X_VIPS | INTEGER | Visitas con promesa con ventana LB=3 días |
+| WINDOW_4_X_VIPS | INTEGER | Visitas con promesa con ventana LB=4 días |
+| WINDOW_1_X_VIPS_CONGRATS | INTEGER | Órdenes con ventana LB=1 día |
+| WINDOW_2_X_VIPS_CONGRATS | INTEGER | Órdenes con ventana LB=2 días |
+| WINDOW_3_X_VIPS_CONGRATS | INTEGER | Órdenes con ventana LB=3 días |
+| WINDOW_4_X_VIPS_CONGRATS | INTEGER | Órdenes con ventana LB=4 días |
+| HT_0_VIPS | INTEGER | Visitas con handling time 0 horas (same day) |
+| HT_1_VIPS | INTEGER | Visitas con handling time 24 horas |
+| HT_2_VIPS | INTEGER | Visitas con handling time 48 horas |
+| HT_MAS2_VIPS | INTEGER | Visitas con handling time mayor a 48 horas (o nulo) |
+| VIP_DS_QUARTER | INTEGER | Trimestre en que se genera la VIP |
+| SHIPPING_PRICE | NUMERIC | Precio del envío |
+| ITEM_PRICE | NUMERIC | Precio del ítem |
+| FREE_SHP_VIPS | INTEGER | Visitas con Free Shipping |
+| NON_FREE_SHP_VIPS | INTEGER | Visitas sin Free Shipping |
+| FREE_SHP_VIP_CONGRATS | INTEGER | Órdenes generadas con Free Shipping |
+| NON_FREE_SHP_VIP_CONGRATS | INTEGER | Órdenes generadas sin Free Shipping |
 
 **Reglas de cálculo — métricas de distribución de promesa (CRÍTICO):**
 
@@ -403,6 +431,14 @@ Las filas de la Tabla de BI NO son 1:1 con visitas. Siempre ponderar por `COUNT_
 | SHP_GROUPING | INTEGER | Envíos agrupados |
 | SHP_MELI_DELIVEY_DAY | INTEGER | Envíos Meli Delivery Day |
 | SHP_NO_RUSH_SLOW_FLEXIBLE | INTEGER | Envíos No Rush / Slow Flexible |
+| SHP_LT_REAL_3D | INTEGER | Envíos entregados en 3 días |
+| SHP_LT_REAL_4D | INTEGER | Envíos entregados en 4 días |
+| SHP_LT_REAL_5D | INTEGER | Envíos entregados en 5 días |
+| SHP_LT_REAL_MENOR_5D | INTEGER | Envíos entregados en menos de 5 días |
+| SHP_XD_TOTAL | INTEGER | Envíos XD total (XD + XD_DO) |
+| SHP_XD_DO | INTEGER | Envíos XD Drop Off |
+| SHP_ONTIME_VENTANA_UB | INTEGER | Envíos on time considerando el Upper Bound de la ventana |
+| SHP_PROMISE_WEEKEND | INTEGER | Envíos con promesa de fin de semana |
 
 **Diferenciación Fast / Slow en Shipments:**
 
