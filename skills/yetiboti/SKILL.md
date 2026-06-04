@@ -5,7 +5,7 @@ argument-hint: "<pregunta en lenguaje natural sobre alarmas, promesas, shipments
 allowed-tools: Bash, Write, PowerShell
 ---
 
-version: 1.3
+version: 1.4
 update-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/version.json
 skill-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/skills/yetiboti/SKILL.md
 
@@ -45,6 +45,26 @@ Leer `$ARGUMENTS` y determinar el **tipo de consulta** según las palabras clave
 Si la consulta mezcla promesas con shipments, usar **ambas tablas** y presentar los resultados side-by-side con labels explícitos.
 
 Si no queda claro el tipo, preguntar al usuario antes de continuar.
+
+---
+
+### Mapeo de Picking Types — aplicar en todos los dominios
+
+Cuando el usuario mencione cualquiera de los siguientes nombres o aliases, mapear al valor canónico usado en las tablas:
+
+| Valor en tabla | Aliases que puede usar el usuario |
+|---|---|
+| `FULFILLMENT` | FF, FBM, FULL, Fulfillment, Full, Fulfillment by Meli |
+| `CROSS_DOCKING` | XD, CROSSDOCK, Cross Docking, Cross-Docking |
+| `XD_DROP_OFF` | XD_DO, XD Drop Off — a veces agrupado con CROSS_DOCKING |
+| `DROP_OFF` | DS, Drop Shipping, Drop Off, Drop-Off, CC, Commercial Carrier |
+| `SELF_SERVICE` | FLEX, Self Service, Self-Service |
+
+**Notas de agrupación:**
+- Si el usuario pide "XD" sin aclarar si incluye XD_DO → preguntar si quiere solo Cross Docking o también XD Drop Off, o agrupar ambos
+- En `BT_SPEED_PROMISE_LT_SUMMARY` los picking types se filtran por `SHP_PICKING_TYPE`
+- En `BT_SPEED_PROMISE_VIP_CVR` y Tabla de BI se filtran por `PICKING_TYPE`
+- En la Tabla de BI el filtro base ya incluye `PICKING_TYPE IN ('FULFILLMENT','CROSS_DOCKING','XD_DROP_OFF','DROP_OFF','SELF_SERVICE')` — no agregar valores fuera de esta lista
 
 ---
 
@@ -795,6 +815,221 @@ Usar esta tabla para comentar automáticamente si alguno de los períodos compar
 
 **Regla de uso:** al presentar cualquier resultado de waterfall para MLB, MLC o MCO, cruzar PERIOD1 y PERIOD2 contra esta tabla. Si algún período contiene feriados, mencionarlo en la respuesta con un comentario del estilo:
 > 📅 *La semana 2026_8 incluye Carnaval (lunes, martes y Quarta-feira de Cinzas) — esto puede explicar variaciones en DIM01 (Día semana + Hora) y DIM08 (Efecto Calendario/Buffering).*
+
+---
+
+---
+
+#### Guía de interpretación del Waterfall
+
+**Regla crítica — MIX vs TASA:**
+El waterfall mide EXCLUSIVAMENTE el efecto del cambio de SHARE (composición). NO mide si el % <=2D interno de un segmento mejoró o empeoró. Para saber si hubo degradación interna de tasa, hay que mirar el Deep Dive: comparar el % <=2D del segmento entre PERIOD1 y PERIOD2.
+
+Ejemplo: DIM03_VAR = -0.46pp significa que el cambio en el mix de picking types explicó -0.46pp de la caída total. Puede ser porque FF perdió share (y FF tiene mejor promesa que XD), o porque XD ganó share (y XD tiene peor promesa). El Deep Dive muestra cuál ocurrió, y además si el % <=2D interno de FF o XD también cambió.
+
+**Verificación matemática obligatoria:** METRIC2 + DIM01_VAR + ... + DIM09_VAR = METRIC1. Si no cierra, hay un error en los datos o en la lectura.
+
+**Consideraciones de análisis:**
+- **MIX vs TASA:** para confirmar si hubo degradación interna de tasa además del efecto mix, siempre mirar el Deep Dive
+- **Puntual vs Estructural:** si el VAR vs Best Week es < 0.5pp el movimiento es puntual; si es > 1pp hay brecha estructural que viene de antes
+- **Contribución vs % interno:** `CONTRIBUCION_VAR_PP` en el Deep Dive = efecto combinado mix + tasa sobre el total. `PERC_LTE2D_P1` vs `PERC_LTE2D_P2` = si ese segmento mejoró o empeoró internamente. Un segmento puede tener gran contribución por volumen aunque su tasa apenas se movió, y viceversa
+- **Regla fundamental:** nunca comparar sites entre sí. Cada site se analiza de forma completamente independiente
+- **Deep Dive Cruzado DIM04 × DIM02:** correr solo cuando DIM04 está en el top 3 de palancas. Muestra combinaciones FC origen × destino; identificar si la combinación perdió share (mix), mantuvo share pero bajó % <=2D (tasa), o ganó share con bajo % <=2D (mix negativo)
+
+---
+
+#### Interpretación de dimensiones — aplica a todos los sites
+
+**DIM01 — Día de semana + Hora del día**
+Mide el cambio en el mix de cuándo se hicieron las visitas. Los valores son combinaciones día+hora (ej: Monday08, Saturday22).
+- VAR negativo: más visitas en fines de semana, noche o fuera del horario de corte de recolección (promesas peores)
+- VAR positivo: más visitas en días hábiles, mañana o mediodía
+- Hipótesis: evento o campaña que concentró tráfico en fin de semana / cambio en patrón de navegación
+
+**DIM02 — Estado/provincia/departamento de destino**
+Mide el cambio en la distribución geográfica de la demanda. Ver sección por site para los valores de cobertura específicos.
+- VAR negativo: creció participación de destinos con promesas más lentas (zonas remotas, sin cobertura <=2D)
+- VAR positivo: creció participación de destinos con buena cobertura
+- Hipótesis: campañas en regiones específicas / cambio de cobertura de red / efecto estacional
+
+**DIM03 — Picking type**
+Mide el cambio en el mix de tipos logísticos. Ver sección por site para % <=2D típico y share por picking type.
+- VAR negativo: creció XD o DS a costa de FF, o FF perdió share hacia XD
+- VAR positivo: creció FF o FLEX a costa de XD o DS
+- Hipótesis: cambio en mix de sellers activos / migración entre logistic types / degradación interna de FF
+
+**DIM04 — FC de origen (FF) / Estado origen (XD)**
+Mide el cambio en qué centros o hubs concentraron el volumen. Ver sección por site para FCs principales y su % <=2D.
+- Para FF: qué FC ganó o perdió participación
+- Para XD: qué estado de origen cambió su peso
+- VAR negativo: más volumen desde FCs con peor promesa / pérdida de share de FCs buenos
+- Si DIM04 en top 3 → correr también Deep Dive Cruzado DIM04 × DIM02
+- Hipótesis: cambios operacionales en algún FC / activación de Custom Offsets / cambio de volumen de seller grande
+
+**DIM05 — Handling time**
+Mide el cambio en el mix de tiempos de preparación de los sellers (SD=0hs, ND=24hs, 2D=48hs, MAS2=+48hs).
+- VAR negativo: más volumen en sellers con HT alto (MAS2 o 2D)
+- VAR positivo: más volumen en sellers con HT bajo (SD o ND)
+- Hipótesis: nuevos sellers con HT alto / seller grande cambió su SLA / HT degradado por stock o capacidad
+
+**DIM06 — Shipping time**
+Mide el cambio en el mix de tiempos de tránsito de las rutas (SD=0hs, ND=24hs, 2D=48hs, MAS2=+48hs).
+- VAR negativo: más rutas con TT alto activas en el período
+- VAR positivo: más rutas con TT bajo
+- Hipótesis: rutas más lentas activadas hacia nuevas zonas / cambios en configuración de TT / expansión geográfica
+
+**DIM07 — Flag offset**
+Mide promesas donde handling + shipping + offset cabe dentro del UB, pero el UB es > 2 días. Son visitas que podrían haber sido <=2D pero el offset las empujó fuera del rango. Deep Dive: OFFSET vs OTHER.
+- VAR negativo: más visitas afectadas por offsets que las sacaron del <=2D
+- Hipótesis: nuevos Custom Offsets en nodos clave / aumento de offsets en FCs o hubs principales
+
+**DIM08 — Efecto calendario / buffering / feriados**
+Mide el gap entre días operativos y delivery bounds. Este componente es SIEMPRE efecto de mix puro — el % <=2D interno de TWODAYS es 100%, de FDS y OTHER es 0%, no hay degradación de tasa posible.
+- TWODAYS: promesas con UB ≤ 2 días → contribuyen al % <=2D
+- FDS: promesas que podrían haber sido <=2D pero no lo fueron por fines de semana, feriados o buffering
+- OTHER: promesas que nunca podrían haber sido <=2D (estructuralmente fuera del rango)
+- VAR negativo: creció FDS u OTHER a costa de TWODAYS
+- Si creció FDS: verificar tabla de feriados y eventos. Un feriado en PERIOD1 que no existía en PERIOD2 explica un VAR negativo estructural — no es un problema operacional, mencionarlo explícitamente
+- Si creció OTHER: puede indicar buffering de capacidad activado o crecimiento de rutas/destinos estructuralmente lentos
+
+**DIM09 — Residuo (tasa pura)**
+Variación que NO se explica por cambios de mix en ninguna dimensión. Es el cambio "puro" en la calidad de la promesa.
+- |DIM09| > 0.3pp: movimiento estructural — degradación o mejora real de la red (cambios en algoritmo, ajustes masivos de TT/HT, política global de offsets)
+- DIM09 ≈ 0: la variación se explica casi completamente por efectos de mix; la red en sí no cambió
+
+---
+
+#### Contexto por site — valores de referencia para interpretación
+
+**🇧🇷 MLB — Brasil**
+
+*DIM02 — Cobertura geográfica:*
+- Mejor cobertura <=2D: SP, RJ, MG, PR (zona sureste)
+- Peor cobertura: regiones Norte y Nordeste (AM, PA, MA, CE, etc.)
+
+*DIM03 — % <=2D típico y share por picking type:*
+| Picking Type | % <=2D típico | Share típico |
+|---|---|---|
+| FLEX (Self Service) | ~90-96% | ~3% |
+| FULFILLMENT (FF) | ~58-62% | ~38% |
+| CROSS_DOCKING (XD) | ~9-11% | ~52% |
+| DROP_OFF (DS) | ~0% | ~7% |
+
+XD es dominante en volume (~52%) pero con muy bajo % <=2D → cualquier ganancia de share de XD sobre FF impacta negativamente el agregado.
+
+*DIM04 — FCs principales y % <=2D aproximado:*
+| FC | Ubicación | % <=2D aprox. |
+|---|---|---|
+| BRRJ02 | Rio de Janeiro | ~75-80% |
+| BRSP02 | São Paulo | ~65-68% |
+| BRSP04 | São Paulo 2 | ~63-66% |
+| BRSC02 | Santa Catarina | ~60-63% |
+| BRBA01 | Bahia | ~55-60% |
+| BRPE01 | Pernambuco | ~50-60% |
+
+Si DIM04 en top 3 → Deep Dive Cruzado: combinaciones críticas son FCs del Nordeste (BRPE01, BRBA01) hacia estados remotos del Norte, o FCs de SP hacia estados fuera del eje SP-RJ-MG. Combinaciones con % <=2D < 30% que ganen share son alerta roja.
+
+*Eventos comerciales MLB:*
+| Mes | Evento | Efecto esperado |
+|---|---|---|
+| Mayo | Hot Sale | Caída por demanda y buffering |
+| Mayo | Dia das Maes | Pico de demanda, posible caída |
+| Junio | Dia dos Namorados | Pico moderado |
+| Noviembre | Black Friday | Caída por demanda y buffering |
+| Noviembre | Cyber Week | Caída sostenida |
+| Diciembre | Navidad / Fin de año | Caída por saturación logística |
+
+---
+
+**🇨🇱 MLC — Chile**
+
+*DIM02 — Cobertura geográfica:*
+- Mejor cobertura <=2D: RM (77.39%), Valparaíso (58.89%), Libertador B. O'Higgins (57.57%), Biobío (56.04%), Ñuble (55.79%)
+- Peor cobertura: Aysén (10.39%), Magallanes (12.71%), Tarapacá (18.92%), Antofagasta (18.95%), Arica y Parinacota (19.12%)
+- La geografía de Chile impacta estructuralmente: zona central concentra la mejor cobertura, extremos norte y sur enfrentan desafíos logísticos
+
+*DIM03 — % <=2D típico y share por picking type:*
+| Picking Type | % <=2D típico | Share típico |
+|---|---|---|
+| SELF_SERVICE (FLEX) | ~97% | ~27% |
+| FULFILLMENT (FF) | ~86% | ~41% |
+| XD_DROP_OFF | ~59% | ~16% |
+| CROSS_DOCKING (XD) | ~58% | ~14% |
+| DROP_OFF (DS) | ~42% | ~1% |
+
+FF es el tipo dominante por share (~41%) y tiene muy alto % <=2D → su variación de share o tasa interna tiene gran impacto en el agregado.
+
+*DIM04 — Centros/hubs principales y % <=2D aproximado:*
+| Hub | Ubicación | % <=2D aprox. |
+|---|---|---|
+| SRM1 | Santiago RM | ~86-89% |
+| SRM2 | Santiago RM | ~84-85% |
+| SVP3 | Valparaíso | ~81-82% |
+| SBB1 | Bío Bío | ~80-81% |
+| STC1 | Temuco/Araucanía | ~78-79% |
+
+Si DIM04 en top 3 → Deep Dive Cruzado: combinaciones críticas son centros del norte y extremo sur hacia destinos remotos (SAF1, SAR1 hacia regiones extremas; SPU1, SXI1 hacia Magallanes y Aysén). Combinaciones con % <=2D < 45% que ganen share son alerta.
+
+*Eventos comerciales MLC:*
+| Mes | Evento | Efecto esperado |
+|---|---|---|
+| Mayo | Hot Sale | Caída por demanda y buffering |
+| Mayo | Día de la Madre | Pico de demanda, posible caída |
+| Junio | Día de los Enamorados | Pico moderado |
+| Noviembre | Black Friday | Caída por demanda y buffering |
+| Noviembre | Cyber Week | Caída sostenida |
+| Diciembre | Navidad / Fin de año | Caída por saturación logística |
+
+---
+
+**🇨🇴 MCO — Colombia**
+
+*DIM02 — Cobertura geográfica:*
+- Mejor cobertura <=2D: Bogotá D.C. (64.81%), Cundinamarca (42.10%), Antioquia (38.70%), Tolima (32.76%), Boyacá (32.70%)
+- Peor cobertura: Chocó (0%), Guainía (0%), San Andrés y Providencia (0%), Vichada (0%), Putumayo (0%)
+- Brecha de ~65pp entre mejor y peor región. Los departamentos con 0% hacen que cualquier crecimiento de demanda ahí impacte directamente el % <=2D agregado sin posibilidad de compensación
+
+*DIM03 — % <=2D típico y share por picking type:*
+| Picking Type | % <=2D típico | Share típico |
+|---|---|---|
+| SELF_SERVICE (FLEX) | ~94% | ~13% |
+| FULFILLMENT (FF) | ~64% | ~24% |
+| CROSS_DOCKING (XD) | ~37% | ~23% |
+| XD_DROP_OFF | ~31% | ~33% |
+| DROP_OFF (DS) | ~0% | ~7% |
+
+⚠️ ATENCIÓN MCO: XD_DROP_OFF es el picking type DOMINANTE (33% de share) pero con solo 31% de <=2D → es el principal factor estructural de arrastre hacia abajo del agregado. Cualquier ganancia de share de XD_DO sobre FF o SELF_SERVICE tiene impacto negativo visible e inmediato.
+
+*DIM04 — Hubs principales y % <=2D aproximado:*
+| Hub | % <=2D aprox. | Notas |
+|---|---|---|
+| SBO1 | ~81% | Mejor hub, CO ST bajo (1.63%), buffering bajo (2.43%) |
+| SCI1 | ~73% | CO ST bajo (1.35%), buffering bajo (2.67%) |
+| SAN1 | ~73% | CO ST 4.53%, buffering 3.67% |
+| SRI1 | ~72% | CO ST 5.48%, buffering 4.40% |
+| SVA1 | ~66% | CO ST 4.68%, buffering 3.17% |
+| SAT1, SBL1, SNS1, SCS1, SCR1, SCA1 | 24-32% | Hubs de bajo desempeño — alto riesgo si ganan share |
+| SNA1, SAN2 | 10-16% | Hubs críticos — impacto negativo inmediato si crecen |
+
+Hubs con mayor CO ST (impacto en DIM07): SCR1 (23.14%), SCS1 (19.16%), SHU2 (8.11%), SSA1 (8.09%)
+Hubs con mayor Buffering (impacto en DIM08): SSA1 (8.04% LM), SNA1 (6.84%), SCA1 (6.30%)
+
+Si DIM04 en top 3 → Deep Dive Cruzado: combinaciones críticas son hubs de bajo desempeño (SAT1, SBL1, SNA1, SAN2, SCR1, SCS1, SCA1) hacia cualquier destino, o SBO1/SCI1 hacia departamentos remotos de Amazonía u Orinoquía. Combinaciones con % <=2D < 45% que ganen share son alerta.
+
+*Nota especial MCO — festivos trasladados:* los feriados trasladados siempre caen en lunes, afectando de forma predecible el share de FDS en DIM08.
+
+*Eventos comerciales MCO:*
+| Mes | Evento | Efecto esperado |
+|---|---|---|
+| Febrero | Día de San Valentín | Pico moderado |
+| Mayo | Día de la Madre | Pico de demanda, posible caída |
+| Junio | Hot Sale | Caída por demanda y buffering |
+| Junio | Día del Padre | Pico moderado |
+| Septiembre | Amor y Amistad | Pico significativo (equivalente a San Valentín) |
+| Octubre | Días sin IVA | ⚠️ Caída crítica por pico de demanda y buffering |
+| Noviembre | Black Friday | Caída por demanda y buffering |
+| Noviembre | Cyber Week | Caída sostenida |
+| Diciembre | Navidad / Fin de año | Caída por saturación logística |
 
 ---
 
