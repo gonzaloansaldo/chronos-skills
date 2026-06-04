@@ -5,7 +5,7 @@ argument-hint: "<pregunta en lenguaje natural sobre alarmas, promesas, shipments
 allowed-tools: Bash, Write, PowerShell
 ---
 
-version: 1.2
+version: 1.3
 update-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/version.json
 skill-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/skills/yetiboti/SKILL.md
 
@@ -213,9 +213,99 @@ Si el usuario pregunta por una ubicación que comparte nombre con estado/provinc
 
 Para cualquier otra ciudad sin ambigüedad, filtrar directamente por `TRK_DESTINATION_CITY_NAME`.
 
+**Diferenciación Fast / Slow en VIPs:**
+
+Las métricas genéricas de VIPs (sin aclaración) siempre hacen referencia a la promesa más rápida disponible (Fast). En una misma VIP puede haber hasta dos ofertas de promesa; la oferta Slow corresponde a los métodos `slow` y `slow_meli`.
+
+- Si el usuario **no menciona** slow ni fast → usar las métricas genéricas (comportamiento estándar)
+- Si el usuario menciona **"fast"** → aclarar que las métricas estándar ya son Fast, no hay campos adicionales
+- Si el usuario menciona **"slow"** → usar los campos específicos de Slow:
+
+| Métrica Slow | Fórmula |
+|---|---|
+| % Visitas con oferta Slow | `SUM(VISITS_SLOW) / SUM(VISITS)` |
+| Promesa Slow LB promedio (días) | `SUM(PROMISE_SLOW_LB) / SUM(VISITS_SLOW)` |
+| Promesa Slow UB promedio (días) | `SUM(PROMISE_SLOW_UB) / SUM(VISITS_SLOW)` |
+
+Nota: no existe CVR específico de Slow en el schema. Si el usuario lo pide, aclararlo explícitamente.
+
 **IMPORTANTE:** Para consultas de promesas, usar SIEMPRE esta tabla como fuente autoritativa. Nunca dividir un numerador de VIPs por un denominador de SHIPMENTS.
 
 **Regla de filtros:** Bajo ninguna circunstancia agregar filtros que no estén especificados explícitamente en las instrucciones o en el pedido del usuario.
+
+---
+
+#### Tabla de BI — `meli-bi-data.WHOWNER.DM_SHP_TRACKS_VIP_CONVERTION`
+
+Usar esta tabla SOLO cuando la tabla intermedia (`BT_SPEED_PROMISE_VIP_CVR`) no puede responder la consulta. Es una tabla muy pesada — una fila por VIP con toda la granularidad — y queries mal acotadas pueden tardar horas.
+
+**Cuándo ir a la Tabla de BI (triggers):**
+- El usuario pide granularidad por **zip code** (solo disponible para MLA)
+- El usuario pide análisis de **convivencia de promesas** — comparar las dos ofertas simultáneas (fast vs slow, métodos, bounds crudos)
+- El usuario pide desglose por **método de entrega raw** (`PROMISE_METHOD_TYPE_ADDRESS_0/1`)
+- El usuario pide campos de **origen granular** por facility o estado de origen por promesa
+- El usuario pide datos por **seller o buyer específico**
+- La métrica requerida **no existe en la intermedia** (ej: `SPAN_SLOW_FAST_LB`, campos de agency con detalle)
+
+**Advertencia obligatoria antes de ejecutar — siempre mostrar y esperar confirmación:**
+> ⚠️ *Esta consulta requiere ir a la Tabla de BI (`DM_SHP_TRACKS_VIP_CONVERTION`), que es muy pesada. Para rangos de más de 7 días puede tardar varios minutos. ¿Querés continuar, o preferís ver esto a nivel de [ciudad / picking type / semana] desde la tabla optimizada?*
+
+Si el usuario elige la alternativa → resolver con `BT_SPEED_PROMISE_VIP_CVR`. Si confirma ir a la Tabla de BI → ejecutar con los filtros obligatorios de abajo.
+
+**Filtros OBLIGATORIOS en toda query a la Tabla de BI:**
+
+Siempre filtrar primero por `VIP_DS` (la tabla está particionada por este campo — sin este filtro la query escanea todo):
+
+```sql
+FROM `meli-bi-data.WHOWNER.DM_SHP_TRACKS_VIP_CONVERTION`
+WHERE VIP_DS BETWEEN {fecha_inicio} AND {fecha_fin}   -- SIEMPRE primero, es la partición
+  AND PICKING_TYPE IN ('FULFILLMENT','CROSS_DOCKING','XD_DROP_OFF','DROP_OFF','SELF_SERVICE')
+  AND USER_BUYER_ID IS NOT NULL
+-- Agregar en HAVING (después del GROUP BY):
+HAVING FLAG_CBT = FALSE
+  AND SHIPPING_MODE = 'ME2'
+  AND VERTICAL_TRACK = 'CORE'
+  AND FLAG_TRACK_VIP_PROMISE = TRUE
+  AND BU = 'mercadolibre'
+  AND TYPE_VIP <> 'VIP_PROXIMITY'
+```
+
+Para consultas de **CVR** agregar además: `AND FLAG_LAST_VIP = TRUE` en el WHERE.
+
+**Regla crítica de agregación — `COUNT_TRACK_VIP`:**
+Las filas de la Tabla de BI NO son 1:1 con visitas. Siempre ponderar por `COUNT_TRACK_VIP`:
+- **Visitas** = `SUM(COUNT_TRACK_VIP)` (nunca `COUNT(*)`)
+- **Cualquier métrica** = `SUM(campo * COUNT_TRACK_VIP)` o `SUM(CASE WHEN ... THEN COUNT_TRACK_VIP ELSE 0 END)`
+- **CVR** = `SUM(CASE WHEN ORDER_PATH IS NOT NULL THEN 1 ELSE 0 END) / SUM(COUNT_TRACK_VIP)`
+
+**Campos disponibles en la Tabla de BI que NO están en la intermedia:**
+
+| Campo | Descripción |
+|---|---|
+| `PROMISE_DESTINATION_ZIPCODE` | Zip code destino (solo MLA) |
+| `PROMISE_METHOD_TYPE_ADDRESS_0` | Método de la primera promesa a domicilio |
+| `PROMISE_METHOD_TYPE_ADDRESS_1` | Método de la segunda promesa a domicilio (slow/fast alternativa) |
+| `PROMISE_LOWER_BOUND_ADDRESS_0/1` | Lower bound crudo de cada promesa |
+| `PROMISE_UPPER_BOUND_ADDRESS_0/1` | Upper bound crudo de cada promesa |
+| `PROMISE_ADDRESS_METHOD_TYPE_ADJ` | Método de la promesa mostrada al usuario (la elegida) |
+| `PROMISE_ORIGINS_ADDRESS_0/1_VALUE_ID` | ID de facility de origen por promesa |
+| `PROMISE_ORIGINS_ADDRESS_0/1_STATE_NAME` | Estado de origen por promesa |
+| `PROMISE_HANDLING_DAYS_ADDRESS_0` | Handling time de la promesa principal |
+| `PROMISE_CUSTOM_OFFSET_ID_ADDRESS_0` | ID del custom offset aplicado |
+| `PROMISE_PICKING_TYPE_0/1` | Picking type por promesa |
+| `USER_BUYER_ID` | ID del comprador |
+| `ORDER_PATH` | No nulo si la VIP convirtió en orden |
+| `SPAN_SLOW_FAST_LB` | Diferencia en días entre promesa slow y fast |
+| `PROMISE_METHOD_TYPE_AGENCY_0` | Método de promesa a agencia |
+| `ITEM_TYPES` | Tipos de ítem (para flag HNB) |
+| `COUNT_TRACK_VIP` | Peso de la fila — usar siempre como ponderador |
+
+**Lógica de convivencia de promesas (caso de uso principal de la Tabla de BI):**
+- `PROMISE_METHOD_TYPE_ADDRESS_1 IS NOT NULL` → hay dos ofertas de promesa en la VIP
+- La promesa mostrada al usuario es `PROMISE_ADDRESS_METHOD_TYPE_ADJ`
+- Fast = la que NO es `slow` ni `slow_meli`
+- Slow = la que es `slow` o `slow_meli`
+- Para identificar cuál es cuál: comparar `PROMISE_METHOD_TYPE_ADDRESS_0` y `PROMISE_METHOD_TYPE_ADDRESS_1` contra `('slow','slow_meli')`
 
 ---
 
@@ -294,16 +384,34 @@ Para cualquier otra ciudad sin ambigüedad, filtrar directamente por `TRK_DESTIN
 | SHP_MELI_DELIVEY_DAY | INTEGER | Envíos Meli Delivery Day |
 | SHP_NO_RUSH_SLOW_FLEXIBLE | INTEGER | Envíos No Rush / Slow Flexible |
 
-**Reglas de cálculo:**
-- **% Delay** = `SUM(SHP_LT_DELAY) / SUM(SHIPMENTS)`
-- **% Early** = `SUM(SHP_LT_EARLY) / SUM(SHIPMENTS)`
-- **% On Time** = `SUM(SHP_LT_ONTIME) / SUM(SHIPMENTS)`
-- **% Buffering** = `SUM(SHP_BUFFERING) / SUM(SHIPMENTS)` (ídem para cualquier subtipo)
-- **% CO ST** = `SUM(SHP_CO_ST) / SUM(SHIPMENTS)`
-- **% CO ST Shift** = `SUM(SHP_CO_ST_SHIFT) / SUM(SHIPMENTS)`
-- Para métricas **Fast**: reemplazar numerador con columna `_FAST` y denominador con `SUM(SHIPMENTS_FAST)`
-- **Por semana**: usar `ISO_FVD_DATE_WEEK` + `ISO_FVD_DATE_YEAR` (o `ISO_FVD_YEAR_WEEK` como label)
-- Usar `SAFE_DIVIDE` para evitar división por cero
+**Diferenciación Fast / Slow en Shipments:**
+
+En shipments hay una sola promesa por envío. Fast = métodos que NO son `slow` ni `slow_meli`. Slow = métodos `slow` y `slow_meli`. Las columnas `_FAST` cubren exclusivamente los envíos Fast; Slow se obtiene siempre por diferencia.
+
+- Si el usuario **no menciona** slow ni fast → usar métricas totales (comportamiento estándar)
+- Si el usuario menciona **"fast"** → usar columnas `_FAST` con denominador `SUM(SHIPMENTS_FAST)`
+- Si el usuario menciona **"slow"** → calcular por diferencia: `(TOTAL - FAST)` con denominador `SUM(SHIPMENTS) - SUM(SHIPMENTS_FAST)`
+
+**Reglas de cálculo — Total (sin aclaración de fast/slow):**
+- **% Delay** = `SAFE_DIVIDE(SUM(SHP_LT_DELAY), SUM(SHIPMENTS))`
+- **% Early** = `SAFE_DIVIDE(SUM(SHP_LT_EARLY), SUM(SHIPMENTS))`
+- **% On Time** = `SAFE_DIVIDE(SUM(SHP_LT_ONTIME), SUM(SHIPMENTS))`
+- **% Buffering** = `SAFE_DIVIDE(SUM(SHP_BUFFERING), SUM(SHIPMENTS))` (ídem para cualquier subtipo)
+- **% CO ST** = `SAFE_DIVIDE(SUM(SHP_CO_ST), SUM(SHIPMENTS))`
+- **% CO ST Shift** = `SAFE_DIVIDE(SUM(SHP_CO_ST_SHIFT), SUM(SHIPMENTS))`
+
+**Reglas de cálculo — Fast:**
+- Reemplazar numerador con columna `_FAST` y denominador con `SUM(SHIPMENTS_FAST)`
+- Ejemplo: `% Buffering Fast` = `SAFE_DIVIDE(SUM(SHP_BUFFERING_FAST), SUM(SHIPMENTS_FAST))`
+
+**Reglas de cálculo — Slow (siempre por diferencia):**
+- Denominador Slow: `SUM(SHIPMENTS) - SUM(SHIPMENTS_FAST)`
+- Ejemplo: `% Buffering Slow` = `SAFE_DIVIDE(SUM(SHP_BUFFERING) - SUM(SHP_BUFFERING_FAST), SUM(SHIPMENTS) - SUM(SHIPMENTS_FAST))`
+- Aplicar el mismo patrón para cualquier métrica: `(SUM(CAMPO_TOTAL) - SUM(CAMPO_FAST)) / (SUM(SHIPMENTS) - SUM(SHIPMENTS_FAST))`
+- Métricas Slow disponibles por diferencia: Delay, Early, On Time, Buffering (total y subtipos), LT Real SD/ND/2D, Promise Window
+
+**Por semana**: usar `ISO_FVD_DATE_WEEK` + `ISO_FVD_DATE_YEAR` (o `ISO_FVD_YEAR_WEEK` como label)
+Usar `SAFE_DIVIDE` en todos los cálculos para evitar división por cero.
 
 ---
 
@@ -617,6 +725,76 @@ ORDER BY ABS(CONTRIBUCION_VAR_PP) DESC
 ```
 
 Para Deep Dive mensual: aplicar el mismo reemplazo de filtros que en Modo MONTH.
+
+---
+
+**Calendario de feriados nacionales — 🇧🇷 MLB (Brasil) 2026:**
+
+Usar esta tabla para comentar automáticamente si alguno de los períodos comparados contiene feriados, especialmente cuando DIM08 (Efecto Calendario/Buffering) muestra variación significativa.
+
+| Fecha | ISO Week | Feriado |
+|---|---|---|
+| 01/01/2026 | 2026_1 | Confraternização Universal |
+| 16/02/2026 | 2026_8 | Carnaval (lunes) |
+| 17/02/2026 | 2026_8 | Carnaval (martes) |
+| 18/02/2026 | 2026_8 | Quarta-feira de Cinzas |
+| 03/04/2026 | 2026_14 | Sexta-feira Santa |
+| 21/04/2026 | 2026_17 | Tiradentes |
+| 01/05/2026 | 2026_18 | Dia do Trabalho |
+| 04/06/2026 | 2026_23 | Corpus Christi |
+| 07/09/2026 | 2026_37 | Independência do Brasil |
+| 12/10/2026 | 2026_42 | Nossa Senhora Aparecida |
+| 02/11/2026 | 2026_45 | Finados |
+| 15/11/2026 | 2026_46 | Proclamação da República |
+| 20/11/2026 | 2026_47 | Dia da Consciência Negra |
+| 25/12/2026 | 2026_52 | Natal |
+
+**Calendario de feriados nacionales — 🇨🇱 MLC (Chile) 2026:**
+
+| Fecha | ISO Week | Feriado |
+|---|---|---|
+| 01/01/2026 | 2026_1 | Año Nuevo |
+| 03/04/2026 | 2026_14 | Viernes Santo |
+| 04/04/2026 | 2026_14 | Sábado Santo |
+| 01/05/2026 | 2026_18 | Día Nacional del Trabajo |
+| 21/05/2026 | 2026_21 | Día de las Glorias Navales |
+| 21/06/2026 | 2026_25 | Día Nacional de los Pueblos Indígenas |
+| 29/06/2026 | 2026_27 | San Pedro y San Pablo |
+| 16/07/2026 | 2026_29 | Día de la Virgen del Carmen |
+| 15/08/2026 | 2026_33 | Asunción de la Virgen |
+| 18/09/2026 | 2026_38 | Independencia Nacional (Fiestas Patrias) |
+| 19/09/2026 | 2026_38 | Día de las Glorias del Ejército |
+| 12/10/2026 | 2026_42 | Encuentro de Dos Mundos |
+| 31/10/2026 | 2026_44 | Día de las Iglesias Evangélicas y Protestantes |
+| 01/11/2026 | 2026_44 | Día de Todos los Santos |
+| 08/12/2026 | 2026_50 | Inmaculada Concepción |
+| 25/12/2026 | 2026_52 | Navidad |
+
+**Calendario de feriados nacionales — 🇨🇴 MCO (Colombia) 2026:**
+
+| Fecha | ISO Week | Feriado |
+|---|---|---|
+| 01/01/2026 | 2026_1 | Año Nuevo |
+| 06/01/2026 | 2026_2 | Reyes Magos |
+| 24/03/2026 | 2026_13 | Día de San José (trasladado) |
+| 17/04/2026 | 2026_16 | Jueves Santo |
+| 18/04/2026 | 2026_16 | Viernes Santo |
+| 01/05/2026 | 2026_18 | Día del Trabajo |
+| 02/06/2026 | 2026_23 | Ascensión del Señor (trasladado) |
+| 23/06/2026 | 2026_26 | Corpus Christi (trasladado) |
+| 30/06/2026 | 2026_27 | Sagrado Corazón de Jesús (trasladado) |
+| 07/07/2026 | 2026_28 | San Pedro y San Pablo (trasladado) |
+| 20/07/2026 | 2026_30 | Grito de Independencia |
+| 07/08/2026 | 2026_32 | Batalla de Boyacá |
+| 18/08/2026 | 2026_34 | Asunción de la Virgen (trasladado) |
+| 13/10/2026 | 2026_42 | Día de la Raza (trasladado) |
+| 03/11/2026 | 2026_45 | Todos los Santos (trasladado) |
+| 17/11/2026 | 2026_47 | Independencia de Cartagena (trasladado) |
+| 08/12/2026 | 2026_50 | Inmaculada Concepción |
+| 25/12/2026 | 2026_52 | Navidad |
+
+**Regla de uso:** al presentar cualquier resultado de waterfall para MLB, MLC o MCO, cruzar PERIOD1 y PERIOD2 contra esta tabla. Si algún período contiene feriados, mencionarlo en la respuesta con un comentario del estilo:
+> 📅 *La semana 2026_8 incluye Carnaval (lunes, martes y Quarta-feira de Cinzas) — esto puede explicar variaciones en DIM01 (Día semana + Hora) y DIM08 (Efecto Calendario/Buffering).*
 
 ---
 
