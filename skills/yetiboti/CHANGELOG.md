@@ -1,27 +1,30 @@
 # Changelog - YetiBoti
 
+## v1.7 - 2026-06-05
+- Waterfall: soporte para metricas SD (MENOR0/DIM05_SD..DIM08_SD) y ND (MENOR1/DIM05_ND..DIM08_ND)
+- Waterfall: soporte para filtrar por picking type (AND PICKING_TYPE)
+- Deep Dive: corregido bug de nested CTEs, parametrizado con METRIC_FIELD y DIM05-08
+- Tabla de BI: triggers ampliados, flags pre-calculados, DEVICE_PLATFORM, ORDER_SHP_METHOD_TYPE, CART_CONTENT, seller profile, PROMISE_OFFSET_DAYS, VIP_PROMISE_DAYS/TYPE_WINDOW
+- VIP_CVR schema: TRK_ORIGIN_ADDRESS_0_VALUE_ID documentado como FC de origen
+
 ## v1.6 - 2026-06-04
-- VIP_CVR schema: agregados 28 campos faltantes vs Excel (TRK_ORIGIN_ADDRESS_0_VALUE_ID, campos Slow/Fast, ventanas granulares WINDOW_1-4_X, WINDOW_VIPS_UB_MENOR_2, HT breakdown, pricing, PROMISE_LB/UB, VIP_DS_QUARTER)
-- LT_SUMMARY schema: agregados 8 campos faltantes vs Excel (SHP_LT_REAL_3D/4D/5D/MENOR_5D, SHP_XD_TOTAL, SHP_XD_DO, SHP_ONTIME_VENTANA_UB, SHP_PROMISE_WEEKEND)
+- VIP_CVR schema: 28 campos faltantes agregados vs Excel
+- LT_SUMMARY schema: 8 campos faltantes agregados vs Excel
 
 ## v1.5 - 2026-06-04
-- Waterfall: guia completa de interpretacion por dimension (DIM01-DIM09)
-- Waterfall: contexto especifico por site para MLB, MLC y MCO (DIM02/03/04 con datos reales, eventos comerciales)
+- Waterfall: guia de interpretacion por dimension y contexto por site (MLB/MLC/MCO)
 
 ## v1.4 - 2026-06-04
-- Fast/Slow en VIPs y Shipments
-- Feriados nacionales MLB, MLC y MCO 2026
-- Tabla de BI: triggers, filtros, COUNT_TRACK_VIP, campos y logica de convivencia
-- Picking types: mapeo global de aliases
+- Fast/Slow, feriados MLB/MLC/MCO, Tabla de BI, picking types aliases
 
 ## v1.3 - 2026-06-03
-- Waterfall: queries corregidas, headline formato, fechas con CURRENT_DATE()
+- Waterfall queries corregidas, formato con headline
 
 ## v1.2 - 2026-06-03
-- PROMISE_CVR: numeradores exactos, fechas Dom-Sab, Top Cities, ciudad/estado, filtros
+- PROMISE_CVR: numeradores, fechas, Top Cities, filtros
 
 ## v1.1 - 2026-06-03
-- Auto-chequeo de version y comando /yetiboti actualizar
+- Auto-chequeo de version y /yetiboti actualizar
 
 ## v1.0 - 2026-06-03
 - Lanzamiento inicial
