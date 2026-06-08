@@ -5,7 +5,7 @@ argument-hint: "<pregunta en lenguaje natural sobre alarmas, promesas, shipments
 allowed-tools: Bash, Write, PowerShell
 ---
 
-version: 1.5
+version: 1.6
 update-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/version.json
 skill-url: https://raw.githubusercontent.com/gonzaloansaldo/chronos-skills/main/skills/yetiboti/SKILL.md
 
@@ -40,7 +40,7 @@ Leer `$ARGUMENTS` y determinar el **tipo de consulta** según las palabras clave
 | promesa, promise, VIP, visita, CVR, conversión, conversión, conversion | PROMISE_CVR | `BT_SPEED_PROMISE_VIP_CVR` |
 | shipment, envío, envio, LT, lead time, delay, early, on time, ontime, buffering, buffer, custom offset, CO, ventana, window, composición, composicion | LT_SUMMARY | `BT_SPEED_PROMISE_LT_SUMMARY` |
 | promesa ideal, ideal promise, SD ideal, ND ideal, 2D ideal, NBC, neto de buyers choice | IDEAL_PROMISE | `BT_SHP_IDEAL_PROMISE` |
-| waterfall, water fall, descomposición, descomposicion, palancas, palanca, deep dive | WATERFALL | `BT_PROMISE_WATERFALL` |
+| waterfall, water fall, descomposición, descomposicion, palancas, palanca, deep dive, waterfall SD, waterfall ND, waterfall same day, waterfall next day | WATERFALL | `BT_PROMISE_WATERFALL` |
 
 Si la consulta mezcla promesas con shipments, usar **ambas tablas** y presentar los resultados side-by-side con labels explícitos.
 
@@ -292,8 +292,12 @@ Usar esta tabla SOLO cuando la tabla intermedia (`BT_SPEED_PROMISE_VIP_CVR`) no 
 - El usuario pide análisis de **convivencia de promesas** — comparar las dos ofertas simultáneas (fast vs slow, métodos, bounds crudos)
 - El usuario pide desglose por **método de entrega raw** (`PROMISE_METHOD_TYPE_ADDRESS_0/1`)
 - El usuario pide campos de **origen granular** por facility o estado de origen por promesa
-- El usuario pide datos por **seller o buyer específico**
-- La métrica requerida **no existe en la intermedia** (ej: `SPAN_SLOW_FAST_LB`, campos de agency con detalle)
+- El usuario pide datos por **seller o buyer específico** (`USER_SELLER_ID`, `SELLER_STATUS`, `USER_SELLER_REPUTATION`)
+- El usuario pide análisis por **dispositivo** (`DEVICE_PLATFORM` — ej. CVR mobile vs desktop)
+- El usuario pide el **método que el comprador efectivamente eligió** al convertir (`ORDER_SHP_METHOD_TYPE`)
+- El usuario pide análisis de **offset de cut-off** (`PROMISE_OFFSET_DAYS_ADDRESS_0`)
+- El usuario pide separar **handling time y shipping time** de forma individual por promesa
+- La métrica requerida **no existe en la intermedia** (ej: `SPAN_SLOW_FAST_LB`, campos de agency con detalle, `CART_CONTENT`)
 
 **Advertencia obligatoria antes de ejecutar — siempre mostrar y esperar confirmación:**
 > ⚠️ *Esta consulta requiere ir a la Tabla de BI (`DM_SHP_TRACKS_VIP_CONVERTION`), que es muy pesada. Para rangos de más de 7 días puede tardar varios minutos. ¿Querés continuar, o preferís ver esto a nivel de [ciudad / picking type / semana] desde la tabla optimizada?*
@@ -328,25 +332,67 @@ Las filas de la Tabla de BI NO son 1:1 con visitas. Siempre ponderar por `COUNT_
 
 **Campos disponibles en la Tabla de BI que NO están en la intermedia:**
 
+*Promesa y logística:*
 | Campo | Descripción |
 |---|---|
 | `PROMISE_DESTINATION_ZIPCODE` | Zip code destino (solo MLA) |
 | `PROMISE_METHOD_TYPE_ADDRESS_0` | Método de la primera promesa a domicilio |
 | `PROMISE_METHOD_TYPE_ADDRESS_1` | Método de la segunda promesa a domicilio (slow/fast alternativa) |
-| `PROMISE_LOWER_BOUND_ADDRESS_0/1` | Lower bound crudo de cada promesa |
-| `PROMISE_UPPER_BOUND_ADDRESS_0/1` | Upper bound crudo de cada promesa |
-| `PROMISE_ADDRESS_METHOD_TYPE_ADJ` | Método de la promesa mostrada al usuario (la elegida) |
-| `PROMISE_ORIGINS_ADDRESS_0/1_VALUE_ID` | ID de facility de origen por promesa |
-| `PROMISE_ORIGINS_ADDRESS_0/1_STATE_NAME` | Estado de origen por promesa |
-| `PROMISE_HANDLING_DAYS_ADDRESS_0` | Handling time de la promesa principal |
+| `PROMISE_ADDRESS_METHOD_TYPE_ADJ` | Método de la promesa mostrada al usuario (la elegida por el algoritmo) |
+| `PROMISE_LOWER_BOUND_ADDRESS_0/1` | Lower bound crudo en días de cada promesa |
+| `PROMISE_UPPER_BOUND_ADDRESS_0/1` | Upper bound crudo en días de cada promesa |
+| `PROMISE_HANDLING_DAYS_ADDRESS_0` | Días de handling time de la promesa principal (preparación del paquete) |
+| `PROMISE_SHIPPING_DAYS_ADDRESS_0` | Días de shipping time de la promesa principal (tránsito) |
+| `PROMISE_OFFSET_DAYS_ADDRESS_0` | Días que el algoritmo agrega por haber superado el horario de corte (cut-off). Causa directa de DIM07 en el waterfall |
 | `PROMISE_CUSTOM_OFFSET_ID_ADDRESS_0` | ID del custom offset aplicado |
 | `PROMISE_PICKING_TYPE_0/1` | Picking type por promesa |
-| `USER_BUYER_ID` | ID del comprador |
-| `ORDER_PATH` | No nulo si la VIP convirtió en orden |
-| `SPAN_SLOW_FAST_LB` | Diferencia en días entre promesa slow y fast |
+| `PROMISE_ORIGINS_ADDRESS_0/1_VALUE_ID` | ID de facility de origen por promesa |
+| `PROMISE_ORIGINS_ADDRESS_0/1_STATE_NAME` | Estado de origen por promesa |
 | `PROMISE_METHOD_TYPE_AGENCY_0` | Método de promesa a agencia |
+| `SPAN_SLOW_FAST_LB` | Diferencia en días entre el LB de la promesa slow y la fast (cuando coexisten) |
+| `PROMISE_PRICE_ADDRESS_0_LC` | Costo de envío en moneda local de la primera opción de domicilio |
+| `PROMISE_PRICE_ADDRESS_1_LC` | Costo de envío en moneda local de la segunda opción de domicilio |
+
+*Flags de promesa pre-calculados — más eficientes que calcular desde bounds:*
+| Campo | Descripción |
+|---|---|
+| `FLAG_VIP_PROMISE_FIXED` | TRUE si la promesa es de día fijo (sin ventana) |
+| `FLAG_VIP_PROMISE_WINDOW` | TRUE si la promesa es un rango de días |
+| `FLAG_VIP_PROMISE_FIXED_SD_OR_LESS` | TRUE si promete entrega Same Day o antes |
+| `FLAG_VIP_PROMISE_FIXED_ND_OR_LESS` | TRUE si promete entrega Next Day o antes |
+| `FLAG_VIP_PROMISE_FIXED_2D_OR_LESS` | TRUE si promete entrega en 2 días o menos |
+| `FLAG_VIP_FREE_SHIPPING` | TRUE si la mejor opción mostrada es sin costo de envío |
+| `FLAG_CBT` | TRUE si es Cross Border Trade (importación) |
+| `VIP_PROMISE_DAYS` | Agrupador categórico: 0, 1, 2, 3, 4, 5, +5 días. Alternativa más simple a calcular desde bounds |
+| `VIP_PROMISE_TYPE_WINDOW` | Clasifica en Short Window (≤3 días) o Long Window. Alternativa más simple a derivar desde UB/LB |
+
+*Conversión y comportamiento:*
+| Campo | Descripción |
+|---|---|
+| `COUNT_TRACK_VIP` | Peso de la fila — SIEMPRE usar como ponderador (ver regla crítica de agregación) |
+| `FLAG_LAST_VIP` | TRUE si fue la última visita del usuario al ítem en ese día — obligatorio para CVR |
+| `ORDER_ID` | ID de la compra. NULL si la visita no convirtió |
+| `ORDER_PATH` | Recorrido de conversión: 'C' (pasó por carrito) o 'L' (compra directa). No nulo si convirtió |
+| `ORDER_DS` | Fecha de la compra |
+| `ORDER_SHP_METHOD_TYPE` | Método logístico que el comprador **efectivamente eligió** al convertir (puede diferir del método ofrecido) |
+| `COUNT_TRACK_ORDER` | 1 en filas que generaron orden, 0 en las que no |
+| `CART_CONTENT` | TRUE si el carrito del usuario ya tenía contenido al ver la publicación |
+
+*Seller y buyer:*
+| Campo | Descripción |
+|---|---|
+| `USER_BUYER_ID` | ID del comprador |
+| `USER_SELLER_ID` | ID del vendedor |
+| `SELLER_STATUS` | Medalla del vendedor (Platinum, Gold, etc.) |
+| `USER_SELLER_REPUTATION` | Termómetro o puntaje de reputación del vendedor |
+| `USER_SELLER_LOYALTY_LEVEL` | Nivel de lealtad MeLi+ del **comprador** (nombre confuso pero mide loyalty del buyer) |
+
+*Contexto de la visita:*
+| Campo | Descripción |
+|---|---|
+| `DEVICE_PLATFORM` | Plataforma desde donde navegó el usuario (mobile, desktop, etc.) — útil para comparar CVR por dispositivo |
+| `TYPE_VIP` | Clasificación de la página (VIP_VIP, VIP_PDP, VIP_PROXIMITY, etc.) — el filtro base excluye VIP_PROXIMITY |
 | `ITEM_TYPES` | Tipos de ítem (para flag HNB) |
-| `COUNT_TRACK_VIP` | Peso de la fila — usar siempre como ponderador |
 
 **Lógica de convivencia de promesas (caso de uso principal de la Tabla de BI):**
 - `PROMISE_METHOD_TYPE_ADDRESS_1 IS NOT NULL` → hay dos ofertas de promesa en la VIP
@@ -354,6 +400,8 @@ Las filas de la Tabla de BI NO son 1:1 con visitas. Siempre ponderar por `COUNT_
 - Fast = la que NO es `slow` ni `slow_meli`
 - Slow = la que es `slow` o `slow_meli`
 - Para identificar cuál es cuál: comparar `PROMISE_METHOD_TYPE_ADDRESS_0` y `PROMISE_METHOD_TYPE_ADDRESS_1` contra `('slow','slow_meli')`
+- Usar `FLAG_VIP_PROMISE_FIXED_SD_OR_LESS`, `FLAG_VIP_PROMISE_FIXED_ND_OR_LESS`, `FLAG_VIP_PROMISE_FIXED_2D_OR_LESS` como alternativa directa a calcular distribución de días desde bounds — son más simples y eficientes
+- `ORDER_SHP_METHOD_TYPE` permite analizar si el buyer efectivamente eligió la opción fast o slow cuando tenía ambas disponibles
 
 ---
 
@@ -500,6 +548,20 @@ Usar `SAFE_DIVIDE` en todos los cálculos.
 - `period1`: período más reciente (el que se analiza)
 - `period2`: período base (contra el que se compara)
 - `mode`: `WEEK` o `MONTH` — inferir del tipo de período que menciona el usuario
+- `metric`: qué métrica analizar — por defecto `2D` si no se especifica. Ver tabla abajo
+- `picking_type` *(opcional)*: filtrar por un picking type específico — si no se menciona, usar todos
+
+**Métricas disponibles en el waterfall:**
+
+| Métrica pedida | Campo numerador | Columnas DIM05-DIM08 |
+|---|---|---|
+| % <=2D (default) | `MENOR2` | `DIM05`, `DIM06`, `DIM07`, `DIM08` |
+| % <=ND (Next Day) | `MENOR1` | `DIM05_ND`, `DIM06_ND`, `DIM07_ND`, `DIM08_ND` |
+| % <=SD (Same Day) | `MENOR0` | `DIM05_SD`, `DIM06_SD`, `DIM07_SD`, `DIM08_SD` |
+
+**Nota sobre DIM05-DIM08 por métrica:** DIM01-DIM04 son iguales para las tres métricas. Solo cambian DIM05 (Handling Time), DIM06 (Shipping Time), DIM07 (Flag Offset) y DIM08 (Calendario/Buffering) porque su impacto varía según el umbral que se analiza.
+
+**Filtro por picking type (opcional):** agregar `AND PICKING_TYPE = '{PT}'` en el WHERE del SELECT interno, usando el valor canónico de la tabla de picking types (`FULFILLMENT`, `CROSS_DOCKING`, `XD_DROP_OFF`, `DROP_OFF`, `SELF_SERVICE`). Si el usuario menciona un alias (ej. "FF", "FBM") mapear al valor canónico.
 
 **Reglas de resolución de períodos:**
 
@@ -558,7 +620,11 @@ WITH tabla1 AS (
     MAX(CASE WHEN IS_P1 THEN CONCAT(CAST(ISO_YEAR_VIP_DS AS STRING),'_',CAST(ISO_WEEK_VIP_DS AS STRING)) ELSE NULL END) AS PERIOD1,
     MAX(CASE WHEN IS_P2 THEN CONCAT(CAST(ISO_YEAR_VIP_DS AS STRING),'_',CAST(ISO_WEEK_VIP_DS AS STRING)) ELSE NULL END) AS PERIOD2,
     SITE_ID, DIM01 AS DIM01_3, DIM01_2, CONCAT(DIM01,DIM01_2) AS DIM01,
-    DIM02, DIM03, DIM04, DIM05, DIM06, DIM07, DIM08,
+    DIM02, DIM03, DIM04,
+    {DIM05_COL} AS DIM05, {DIM06_COL} AS DIM06, {DIM07_COL} AS DIM07, {DIM08_COL} AS DIM08,
+    -- Para % <=2D: DIM05, DIM06, DIM07, DIM08
+    -- Para % <=ND: DIM05_ND, DIM06_ND, DIM07_ND, DIM08_ND
+    -- Para % <=SD: DIM05_SD, DIM06_SD, DIM07_SD, DIM08_SD
     SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID) AS VIP_VISITS_TOTAL_1,
     SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2)) AS VIP_VISITS_DIM01_1,
     SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02) AS VIP_VISITS_DIM02_1,
@@ -587,11 +653,14 @@ WITH tabla1 AS (
       {P2_FILTER} AS IS_P2,
       CASE WHEN {P1_FILTER} THEN VIP_VISITS ELSE 0 END AS VIP_VISITS_1,
       CASE WHEN {P2_FILTER} THEN VIP_VISITS ELSE 0 END AS VIP_VISITS_2,
-      CASE WHEN {P1_FILTER} THEN MENOR2 ELSE 0 END AS MENOR2_1,
-      CASE WHEN {P2_FILTER} THEN MENOR2 ELSE 0 END AS MENOR2_2
+      CASE WHEN {P1_FILTER} THEN {METRIC_FIELD} ELSE 0 END AS MENOR2_1,
+      CASE WHEN {P2_FILTER} THEN {METRIC_FIELD} ELSE 0 END AS MENOR2_2
+      -- {METRIC_FIELD}: MENOR2 para % <=2D | MENOR1 para % <=ND | MENOR0 para % <=SD
     FROM `meli-bi-data.SBOX_NETWORKD.BT_PROMISE_WATERFALL`
     WHERE SITE_ID = '{SITE}'
       AND ({P1_FILTER} OR {P2_FILTER})
+      -- Si el usuario pide un picking type específico, agregar:
+      -- AND PICKING_TYPE = '{PT}'  (usar valor canónico: FULFILLMENT, CROSS_DOCKING, XD_DROP_OFF, DROP_OFF, SELF_SERVICE)
     GROUP BY ALL
   )
   GROUP BY ALL
@@ -666,121 +735,109 @@ MAX(CASE WHEN IS_P2 THEN CONCAT(YEAR_VIP_DS,'_',LPAD(CAST(MONTH_VIP_DS AS STRING
 
 ##### Deep Dive — a pedido del usuario para una dimensión específica
 
-Correr solo cuando el usuario pregunta por una palanca específica. Usa los mismos `{SITE}`, `{YEAR1}`, `{WEEK1}/{MONTH1}`, `{YEAR2}`, `{WEEK2}/{MONTH2}` del waterfall anterior — no volver a pedirlos.
+Correr solo cuando el usuario pregunta por una palanca específica. Reutilizar los mismos parámetros del waterfall anterior: `{SITE}`, `{P1_FILTER}`, `{P2_FILTER}`, `{METRIC_FIELD}`, `{DIM05_COL}`..`{DIM08_COL}` y el filtro de picking type si aplica — no volver a pedirlos.
 
 Mapear la palanca mencionada por el usuario a la columna correspondiente:
 
 | Palanca mencionada | DIM a usar en GROUP BY |
 |---|---|
 | Día semana / Hora / día y hora | DIM01 |
-| Estado destino / estado / provincia | DIM02 |
+| Estado destino / estado / provincia / departamento | DIM02 |
 | Picking type / logística / tipo de picking | DIM03 |
-| FC origen / fulfillment center / centro logístico | DIM04 |
+| FC origen / fulfillment center / centro logístico / hub | DIM04 |
 | Handling time / HT / tiempo de manejo | DIM05 |
 | Shipping time / tiempo de envío / tránsito | DIM06 |
-| Flag offset / offset / ajuste | DIM07 |
-| Calendario / buffering / feriado | DIM08 |
+| Flag offset / offset / ajuste / custom offset | DIM07 |
+| Calendario / buffering / feriado / FDS | DIM08 |
 
-**Query Deep Dive** (reemplazar `{DIM_COL}` por la dimensión correcta, ej: `DIM04`):
+**Query Deep Dive** — mismos parámetros que el waterfall (`{METRIC_FIELD}`, `{DIM05_COL}`..`{DIM08_COL}`, `{P1_FILTER}`, `{P2_FILTER}`). Reemplazar `{DIM_COL}` por la dimensión a profundizar (ej: `DIM04`):
 
 ```sql
-WITH tabla3 AS (
-WITH tabla2 AS (
 WITH tabla1 AS (
-SELECT
-  MAX(CASE WHEN IS_P1 THEN CONCAT(ISO_YEAR_VIP_DS,'_',ISO_WEEK_VIP_DS) ELSE NULL END) AS PERIOD1,
-  MAX(CASE WHEN IS_P2 THEN CONCAT(ISO_YEAR_VIP_DS,'_',ISO_WEEK_VIP_DS) ELSE NULL END) AS PERIOD2,
-  SITE_ID, DIM01 AS DIM01_3, DIM01_2, CONCAT(DIM01,DIM01_2) AS DIM01,
-  DIM02, DIM03, DIM04, DIM05, DIM06, DIM07, DIM08,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID) AS VIP_VISITS_TOTAL_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2)) AS VIP_VISITS_DIM01_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02) AS VIP_VISITS_DIM02_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03) AS VIP_VISITS_DIM03_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04) AS VIP_VISITS_DIM04_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05) AS VIP_VISITS_DIM05_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06) AS VIP_VISITS_DIM06_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07) AS VIP_VISITS_DIM07_1,
-  SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07,DIM08) AS VIP_VISITS_DIM08_1,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID) AS VIP_VISITS_TOTAL_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2)) AS VIP_VISITS_DIM01_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02) AS VIP_VISITS_DIM02_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03) AS VIP_VISITS_DIM03_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04) AS VIP_VISITS_DIM04_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05) AS VIP_VISITS_DIM05_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06) AS VIP_VISITS_DIM06_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07) AS VIP_VISITS_DIM07_2,
-  SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07,DIM08) AS VIP_VISITS_DIM08_2,
-  SUM(VIP_VISITS) AS VIP_VISITS,
-  SUM(VIP_VISITS_1) AS VIP_VISITS_1,
-  SUM(VIP_VISITS_2) AS VIP_VISITS_2,
-  SUM(MENOR2_1) AS MENOR2_1,
-  SUM(MENOR2_2) AS MENOR2_2
-FROM (
-  SELECT *,
-    (ISO_YEAR_VIP_DS = {YEAR1} AND ISO_WEEK_VIP_DS = {WEEK1}) AS IS_P1,
-    (ISO_YEAR_VIP_DS = {YEAR2} AND ISO_WEEK_VIP_DS = {WEEK2}) AS IS_P2,
-    CASE WHEN (ISO_YEAR_VIP_DS = {YEAR1} AND ISO_WEEK_VIP_DS = {WEEK1}) THEN VIP_VISITS ELSE 0 END AS VIP_VISITS_1,
-    CASE WHEN (ISO_YEAR_VIP_DS = {YEAR2} AND ISO_WEEK_VIP_DS = {WEEK2}) THEN VIP_VISITS ELSE 0 END AS VIP_VISITS_2,
-    CASE WHEN (ISO_YEAR_VIP_DS = {YEAR1} AND ISO_WEEK_VIP_DS = {WEEK1}) THEN MENOR2 ELSE 0 END AS MENOR2_1,
-    CASE WHEN (ISO_YEAR_VIP_DS = {YEAR2} AND ISO_WEEK_VIP_DS = {WEEK2}) THEN MENOR2 ELSE 0 END AS MENOR2_2
-  FROM `meli-bi-data.SBOX_NETWORKD.BT_PROMISE_WATERFALL`
-  WHERE SITE_ID = '{SITE}'
-    AND ((ISO_YEAR_VIP_DS = {YEAR1} AND ISO_WEEK_VIP_DS = {WEEK1})
-      OR (ISO_YEAR_VIP_DS = {YEAR2} AND ISO_WEEK_VIP_DS = {WEEK2}))
+  SELECT
+    MAX(CASE WHEN IS_P1 THEN CONCAT(CAST(ISO_YEAR_VIP_DS AS STRING),'_',CAST(ISO_WEEK_VIP_DS AS STRING)) ELSE NULL END) AS PERIOD1,
+    MAX(CASE WHEN IS_P2 THEN CONCAT(CAST(ISO_YEAR_VIP_DS AS STRING),'_',CAST(ISO_WEEK_VIP_DS AS STRING)) ELSE NULL END) AS PERIOD2,
+    SITE_ID, DIM01 AS DIM01_3, DIM01_2, CONCAT(DIM01,DIM01_2) AS DIM01,
+    DIM02, DIM03, DIM04,
+    {DIM05_COL} AS DIM05, {DIM06_COL} AS DIM06, {DIM07_COL} AS DIM07, {DIM08_COL} AS DIM08,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID) AS VIP_VISITS_TOTAL_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2)) AS VIP_VISITS_DIM01_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02) AS VIP_VISITS_DIM02_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03) AS VIP_VISITS_DIM03_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04) AS VIP_VISITS_DIM04_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05) AS VIP_VISITS_DIM05_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06) AS VIP_VISITS_DIM06_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07) AS VIP_VISITS_DIM07_1,
+    SUM(SUM(VIP_VISITS_1)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07,DIM08) AS VIP_VISITS_DIM08_1,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID) AS VIP_VISITS_TOTAL_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2)) AS VIP_VISITS_DIM01_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02) AS VIP_VISITS_DIM02_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03) AS VIP_VISITS_DIM03_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04) AS VIP_VISITS_DIM04_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05) AS VIP_VISITS_DIM05_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06) AS VIP_VISITS_DIM06_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07) AS VIP_VISITS_DIM07_2,
+    SUM(SUM(VIP_VISITS_2)) OVER(PARTITION BY SITE_ID,CONCAT(DIM01,DIM01_2),DIM02,DIM03,DIM04,DIM05,DIM06,DIM07,DIM08) AS VIP_VISITS_DIM08_2,
+    SUM(VIP_VISITS_1) AS VIP_VISITS_1,
+    SUM(VIP_VISITS_2) AS VIP_VISITS_2,
+    SUM(MENOR2_1) AS MENOR2_1,
+    SUM(MENOR2_2) AS MENOR2_2
+  FROM (
+    SELECT *,
+      {P1_FILTER} AS IS_P1,
+      {P2_FILTER} AS IS_P2,
+      CASE WHEN {P1_FILTER} THEN VIP_VISITS ELSE 0 END AS VIP_VISITS_1,
+      CASE WHEN {P2_FILTER} THEN VIP_VISITS ELSE 0 END AS VIP_VISITS_2,
+      CASE WHEN {P1_FILTER} THEN {METRIC_FIELD} ELSE 0 END AS MENOR2_1,
+      CASE WHEN {P2_FILTER} THEN {METRIC_FIELD} ELSE 0 END AS MENOR2_2
+    FROM `meli-bi-data.SBOX_NETWORKD.BT_PROMISE_WATERFALL`
+    WHERE SITE_ID = '{SITE}'
+      AND ({P1_FILTER} OR {P2_FILTER})
+      -- AND PICKING_TYPE = '{PT}'  -- si aplica
+    GROUP BY ALL
+  )
   GROUP BY ALL
+),
+tabla2 AS (
+  SELECT *,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM01_1, VIP_VISITS_TOTAL_1), 0) AS VIP_VISITS_DIM01_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM02_1, VIP_VISITS_DIM01_1), 0) AS VIP_VISITS_DIM02_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM03_1, VIP_VISITS_DIM02_1), 0) AS VIP_VISITS_DIM03_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM04_1, VIP_VISITS_DIM03_1), 0) AS VIP_VISITS_DIM04_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM05_1, VIP_VISITS_DIM04_1), 0) AS VIP_VISITS_DIM05_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM06_1, VIP_VISITS_DIM05_1), 0) AS VIP_VISITS_DIM06_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM07_1, VIP_VISITS_DIM06_1), 0) AS VIP_VISITS_DIM07_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM08_1, VIP_VISITS_DIM07_1), 0) AS VIP_VISITS_DIM08_1_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM01_2, VIP_VISITS_TOTAL_2), 0) AS VIP_VISITS_DIM01_2_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM02_2, VIP_VISITS_DIM01_2), 0) AS VIP_VISITS_DIM02_2_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM03_2, VIP_VISITS_DIM02_2), 0) AS VIP_VISITS_DIM03_2_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM04_2, VIP_VISITS_DIM03_2), 0) AS VIP_VISITS_DIM04_2_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM05_2, VIP_VISITS_DIM04_2), 0) AS VIP_VISITS_DIM05_2_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM06_2, VIP_VISITS_DIM05_2), 0) AS VIP_VISITS_DIM06_2_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM07_2, VIP_VISITS_DIM06_2), 0) AS VIP_VISITS_DIM07_2_SHARE,
+    IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM08_2, VIP_VISITS_DIM07_2), 0) AS VIP_VISITS_DIM08_2_SHARE,
+    IFNULL(SAFE_DIVIDE(MENOR2_1, VIP_VISITS_1), 0) AS MENOR2_1_PERC,
+    IFNULL(SAFE_DIVIDE(MENOR2_2, VIP_VISITS_2), 0) AS MENOR2_2_PERC
+  FROM tabla1
 )
-GROUP BY ALL
-),
-
-SELECT
-  SITE_ID, DIM01, DIM02, DIM03, DIM04, DIM05, DIM06, DIM07, DIM08,
-  VIP_VISITS_TOTAL_1, VIP_VISITS_DIM01_1, VIP_VISITS_DIM02_1, VIP_VISITS_DIM03_1,
-  VIP_VISITS_DIM04_1, VIP_VISITS_DIM05_1, VIP_VISITS_DIM06_1, VIP_VISITS_DIM07_1, VIP_VISITS_DIM08_1,
-  VIP_VISITS_TOTAL_2, VIP_VISITS_DIM01_2, VIP_VISITS_DIM02_2, VIP_VISITS_DIM03_2,
-  VIP_VISITS_DIM04_2, VIP_VISITS_DIM05_2, VIP_VISITS_DIM06_2, VIP_VISITS_DIM07_2, VIP_VISITS_DIM08_2,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_TOTAL_1, VIP_VISITS_TOTAL_1), 0) AS VIP_VISITS_TOTAL_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM01_1, VIP_VISITS_TOTAL_1), 0) AS VIP_VISITS_DIM01_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM02_1, VIP_VISITS_DIM01_1), 0) AS VIP_VISITS_DIM02_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM03_1, VIP_VISITS_DIM02_1), 0) AS VIP_VISITS_DIM03_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM04_1, VIP_VISITS_DIM03_1), 0) AS VIP_VISITS_DIM04_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM05_1, VIP_VISITS_DIM04_1), 0) AS VIP_VISITS_DIM05_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM06_1, VIP_VISITS_DIM05_1), 0) AS VIP_VISITS_DIM06_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM07_1, VIP_VISITS_DIM06_1), 0) AS VIP_VISITS_DIM07_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM08_1, VIP_VISITS_DIM07_1), 0) AS VIP_VISITS_DIM08_1_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM01_2, VIP_VISITS_TOTAL_2), 0) AS VIP_VISITS_DIM01_2_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM02_2, VIP_VISITS_DIM01_2), 0) AS VIP_VISITS_DIM02_2_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM03_2, VIP_VISITS_DIM02_2), 0) AS VIP_VISITS_DIM03_2_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM04_2, VIP_VISITS_DIM03_2), 0) AS VIP_VISITS_DIM04_2_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM05_2, VIP_VISITS_DIM04_2), 0) AS VIP_VISITS_DIM05_2_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM06_2, VIP_VISITS_DIM05_2), 0) AS VIP_VISITS_DIM06_2_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM07_2, VIP_VISITS_DIM06_2), 0) AS VIP_VISITS_DIM07_2_SHARE,
-  IFNULL(SAFE_DIVIDE(VIP_VISITS_DIM08_2, VIP_VISITS_DIM07_2), 0) AS VIP_VISITS_DIM08_2_SHARE,
-  IFNULL(SAFE_DIVIDE(MENOR2_1, VIP_VISITS_1), 0) AS MENOR2_1_PERC,
-  IFNULL(SAFE_DIVIDE(MENOR2_2, VIP_VISITS_2), 0) AS MENOR2_2_PERC,
-  MENOR2_1, MENOR2_2, VIP_VISITS_1, VIP_VISITS_2, PERIOD1, PERIOD2
-FROM tabla1
-),
-
 SELECT
   SITE_ID,
   {DIM_COL} AS DIM_VALUE,
-  SUM(VIP_VISITS_1) AS VIP_VISITS_1,
-  SUM(VIP_VISITS_2) AS VIP_VISITS_2,
-  SUM(MENOR2_1) AS MENOR2_1,
-  SUM(MENOR2_2) AS MENOR2_2,
-  SAFE_DIVIDE(SUM(MENOR2_1), SUM(VIP_VISITS_1)) AS PERC_LTE2D_P1,
-  SAFE_DIVIDE(SUM(MENOR2_2), SUM(VIP_VISITS_2)) AS PERC_LTE2D_P2,
+  SUM(VIP_VISITS_1) AS VIP_VISITS_P1,
+  SUM(VIP_VISITS_2) AS VIP_VISITS_P2,
+  SAFE_DIVIDE(SUM(MENOR2_1), SUM(VIP_VISITS_1)) AS PERC_METRIC_P1,
+  SAFE_DIVIDE(SUM(MENOR2_2), SUM(VIP_VISITS_2)) AS PERC_METRIC_P2,
   SAFE_DIVIDE(SUM(VIP_VISITS_1), MAX(VIP_VISITS_TOTAL_1)) AS SHARE_P1,
   SAFE_DIVIDE(SUM(VIP_VISITS_2), MAX(VIP_VISITS_TOTAL_2)) AS SHARE_P2,
   SAFE_DIVIDE(SUM(MENOR2_1), MAX(VIP_VISITS_TOTAL_1)) - SAFE_DIVIDE(SUM(MENOR2_2), MAX(VIP_VISITS_TOTAL_2)) AS CONTRIBUCION_VAR_PP,
   MAX(PERIOD1) AS PERIOD1,
   MAX(PERIOD2) AS PERIOD2
-FROM tabla3
+FROM tabla2
 GROUP BY 1, 2
 ORDER BY ABS(CONTRIBUCION_VAR_PP) DESC
 ```
 
-Para Deep Dive mensual: aplicar el mismo reemplazo de filtros que en Modo MONTH.
+Para Deep Dive mensual: usar `{P1_FILTER}` y `{P2_FILTER}` con los filtros de mes correspondientes (igual que en la query del waterfall mensual).
 
 ---
 
